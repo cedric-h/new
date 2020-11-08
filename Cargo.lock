@@ -556,6 +556,7 @@ checksum = "130d84f4402225e7e343256f519ff47f3cd439031fa76ef79d92f2f4c6389223"
 [[package]]
 name = "megaui"
 version = "0.2.14"
+source = "git+https://github.com/cedric-h/megaui.git?branch=scroll_here#4655711054407547c3cfb6239076040afe09d5df"
 dependencies = [
  "miniquad_text_rusttype",
 ]
