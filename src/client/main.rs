@@ -31,22 +31,22 @@ impl Sprite {
 
 #[derive(Debug, Copy, Clone)]
 struct Ent {
-    pos_frames: [(Instant, Vec2); 2],
+    pos_frames: [(f64, Vec2); 2],
+    last_update: Instant,
     sprite: Sprite,
 }
 impl Ent {
     fn new(pos: Vec2, art: comn::Art) -> Self {
-        Self { pos_frames: [(Instant::now(), pos); 2], sprite: Sprite::new(art) }
+        Self { pos_frames: [(0.0, pos); 2], sprite: Sprite::new(art), last_update: Instant::now() }
     }
 
+    //dbg!(between_before_and_last, since_last, ratio);
     fn pos_lerp(&self) -> Vec2 {
         let [(last_time, last), (before_time, before)] = self.pos_frames;
-        let delta = last_time.duration_since(before_time).as_secs_f32();
-        if delta > f32::EPSILON {
-            before.lerp(last, last_time.elapsed().as_secs_f32() / delta)
-        } else {
-            last
-        }
+        before.lerp(
+            last,
+            (self.last_update.elapsed().as_secs_f64() / (last_time - before_time)) as f32,
+        )
     }
 }
 
@@ -70,9 +70,13 @@ impl Ents {
                 EntEvent::Despawn(id) => ents.remove(&id),
             };
         }
-        while let Some(Move(id, pos)) = channels.recv() {
+        while let Some(Move { id, time, pos }) = channels.recv() {
             if let Some(ent) = ents.get_mut(&id) {
-                ent.pos_frames = [(Instant::now(), pos), ent.pos_frames[0]];
+                let [(last_time, last), _] = ent.pos_frames;
+                if time > last_time {
+                    ent.pos_frames = [(time, pos), (last_time, last)];
+                    ent.last_update = Instant::now();
+                }
             }
         }
     }
@@ -164,6 +168,7 @@ async fn main() {
         next_frame().await;
     };
     let mut ents = Ents::new(intro.islands);
+    ents.ents.remove(&intro.your_island); // DELETE ME PLS
     let mut chat_box = ChatBox::new();
     chat_box.log_message(format!("Welcome to {}!", intro.world_name));
 

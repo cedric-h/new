@@ -111,8 +111,12 @@ messages! {
             message_buffer_size: 8,
             packet_buffer_size: 8,
         }
-        #[derive(Serialize, Deserialize, Debug)]
-        pub struct Move(pub u64, pub Vec2);
+        #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+        pub struct Move {
+            pub id: u64,
+            pub time: f64,
+            pub pos: Vec2
+        }
     ),
     (
         MessageChannelSettings {

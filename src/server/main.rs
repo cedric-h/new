@@ -38,7 +38,6 @@ impl ChatDispatcher {
 
 use glam::Vec2;
 use hecs::Bundle;
-use std::net::SocketAddr;
 #[derive(Debug, Bundle)]
 struct PlayerIsland {
     pos: Vec2,
@@ -51,82 +50,71 @@ impl PlayerIsland {
     }
 }
 
-struct World {
-    name: String,
-    ecs: hecs::World,
-
-    /// Temporary buffer for storing clients before removing them.
-    timed_out: Vec<hecs::Entity>,
+struct LastPos(Vec2);
+struct LastPosTracker {
+    need_last: Vec<(hecs::Entity, Vec2)>,
+    messages: Vec<comn::Move>,
+    start: Instant,
 }
-impl World {
-    fn new(name: impl ToString) -> Self {
-        Self { name: name.to_string(), ecs: hecs::World::new(), timed_out: Vec::with_capacity(10) }
+impl LastPosTracker {
+    fn new() -> Self {
+        Self {
+            need_last: Vec::with_capacity(1000),
+            messages: Vec::with_capacity(1000),
+            start: Instant::now(),
+        }
+    }
+
+    fn track(&mut self, ecs: &mut Ecs) {
+        let Self { messages, need_last, start } = self;
+        need_last.extend(ecs.query::<&_>().without::<LastPos>().iter().map(|(e, p)| (e, *p)));
+        for (e, pos) in need_last.drain(..) {
+            comn::or_err!(ecs.insert_one(e, LastPos(pos)));
+        }
+
+        messages.clear();
+        let time = start.elapsed().as_secs_f64();
+        for (e, (&pos, last_pos)) in &mut ecs.query::<(&Vec2, &mut LastPos)>() {
+            if pos != last_pos.0 {
+                last_pos.0 = pos;
+                messages.push(comn::Move { id: e.to_bits(), time, pos });
+            }
+        }
+    }
+
+    fn sync(&self, Session { channel, .. }: &mut Session) {
+        for &message in &self.messages {
+            comn::send_or_err(channel, message);
+        }
+    }
+}
+
+struct Ecs(hecs::World);
+impl Ecs {
+    fn new() -> Self {
+        Self(hecs::World::new())
     }
 
     fn clients(&self) -> hecs::QueryBorrow<'_, &Session> {
-        self.ecs.query()
+        self.0.query()
     }
 
     fn clients_mut(&mut self) -> hecs::QueryBorrow<'_, &mut Session> {
-        self.ecs.query()
+        self.0.query()
     }
 
     fn client_count(&self) -> usize {
         self.clients().iter().count()
     }
 
-    /// Add a client and their island to this world,
-    /// sending them an intitial WorldJoin packet with essential world state.
-    fn connect(&mut self, island: PlayerIsland) {
-        use comn::{send_or_err, WorldJoin};
-        log::info!(
-            "{} > {} joined in! world clients: {}",
-            self.name,
-            island.session.addr,
-            self.client_count() + 1
-        );
-
-        let ent = self.add_island(island);
-        let islands =
-            self.ecs.query::<(&_, &_)>().iter().map(|(e, (&p, &a))| (e.to_bits(), p, a)).collect();
-
-        send_or_err(
-            &mut self.ecs.get_mut::<Session>(ent).unwrap().channel,
-            WorldJoin { world_name: self.name.clone(), islands, your_island: ent.to_bits() },
-        );
-    }
-
-    fn update(&mut self, chat: &mut ChatDispatcher) {
-        let mut timed_out = std::mem::take(&mut self.timed_out);
-        for (e, client) in &mut self.clients_mut() {
-            if client.heartbeat() {
-                timed_out.push(e);
-            }
-            chat.sync(client);
-            client.channel.flush_all();
-        }
-
-        for timed_out in timed_out.drain(..) {
-            let island = self.remove_island(timed_out).unwrap();
-            log::info!(
-                "{} > {} timed out! world clients: {}",
-                self.name,
-                island.session.addr,
-                self.client_count()
-            );
-        }
-
-        self.timed_out = timed_out;
-    }
-
     /// Inserts the given island, returning its Entity.
     /// Sends a message to all clients letting them know as much.
     fn add_island(&mut self, island: PlayerIsland) -> hecs::Entity {
         use comn::{send_or_err, EntEvent};
-        let ent = self.ecs.reserve_entity();
+        let ent = self.0.reserve_entity();
         let spawn_msg = EntEvent::Spawn(ent.to_bits(), island.pos, island.art);
 
-        comn::or_err!(self.ecs.insert(ent, island));
+        comn::or_err!(self.0.insert(ent, island));
         for (_, Session { channel, .. }) in self.clients_mut().iter().filter(|(e, _)| *e != ent) {
             send_or_err(channel, spawn_msg)
         }
@@ -141,16 +129,92 @@ impl World {
         for (_, Session { channel, .. }) in &mut self.clients_mut() {
             comn::send_or_err(channel, comn::EntEvent::Despawn(ent.to_bits()));
         }
-        let island = self.ecs.remove(ent);
-        if let Err(e) = self.ecs.despawn(ent) {
+        let island = self.0.remove(ent);
+        if let Err(e) = self.0.despawn(ent) {
             log::error!("couldn't remove ent: {}", e);
         }
         island
     }
+}
+impl std::ops::Deref for Ecs {
+    type Target = hecs::World;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for Ecs {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+struct World {
+    name: String,
+    ecs: Ecs,
+    last_pos_tracker: LastPosTracker,
+
+    /// Temporary buffer for storing clients before removing them.
+    timed_out: Vec<hecs::Entity>,
+}
+impl World {
+    fn new(name: impl ToString) -> Self {
+        Self {
+            name: name.to_string(),
+            ecs: Ecs::new(),
+            last_pos_tracker: LastPosTracker::new(),
+            timed_out: Vec::with_capacity(10),
+        }
+    }
+
+    /// Add a client and their island to this world,
+    /// sending them an intitial WorldJoin packet with essential world state.
+    fn connect(&mut self, island: PlayerIsland) {
+        use comn::{send_or_err, WorldJoin};
+        let Self { name, ecs, .. } = self;
+
+        log::info!(
+            "{} > {} joined in! world clients: {}",
+            name,
+            island.session.addr,
+            ecs.client_count() + 1
+        );
+
+        let ent = ecs.add_island(island);
+        let islands =
+            ecs.query::<(&_, &_)>().iter().map(|(e, (&p, &a))| (e.to_bits(), p, a)).collect();
+
+        send_or_err(
+            &mut ecs.get_mut::<Session>(ent).unwrap().channel,
+            WorldJoin { world_name: name.clone(), islands, your_island: ent.to_bits() },
+        );
+    }
+
+    fn update(&mut self, chat: &mut ChatDispatcher) {
+        let Self { last_pos_tracker, ecs, timed_out, name, .. } = self;
+        last_pos_tracker.track(ecs);
+        for (e, client) in &mut ecs.clients_mut() {
+            if client.heartbeat() {
+                timed_out.push(e);
+            }
+            last_pos_tracker.sync(client);
+            chat.sync(client);
+            client.channel.flush_all();
+        }
+
+        for timed_out in timed_out.drain(..) {
+            let island = ecs.remove_island(timed_out).unwrap();
+            log::info!(
+                "{} > {} timed out! world clients: {}",
+                name,
+                island.session.addr,
+                ecs.client_count()
+            );
+        }
+    }
 
     /// Returns `true` if any clients are connected
     fn is_occupied(&self) -> bool {
-        self.client_count() > 0
+        self.ecs.client_count() > 0
     }
 
     /// Removes all islands, etc. without notifying any collected clients.
@@ -160,12 +224,39 @@ impl World {
     }
 }
 
+use std::time::Instant;
+#[derive(Debug)]
+struct Revolve {
+    center: Vec2,
+    start: Instant,
+}
+impl Revolve {
+    #[allow(dead_code)]
+    fn new(center: Vec2) -> Self {
+        Self { center, start: Instant::now() }
+    }
+    fn offset(center: Vec2, offset: f32) -> Self {
+        Self { center, start: Instant::now() - Duration::from_secs_f32(offset) }
+    }
+}
+
+fn revolve(ecs: &mut hecs::World) {
+    for (_, (pos, &Revolve { center, start })) in &mut ecs.query::<(&mut Vec2, &_)>() {
+        let dist = (center - *pos).length();
+        *pos = center + dist * comn::angle_to_vec(start.elapsed().as_secs_f32());
+    }
+}
+
 fn prepare_starter(world: &mut World) {
     world.clear();
-    const MAX: usize = 3;
+    const MAX: usize = 1;
     for i in 0..MAX {
         use std::f32::consts::TAU;
-        world.ecs.spawn((comn::angle_to_vec(i as f32 / MAX as f32 * TAU), comn::Art::Vase));
+        world.ecs.spawn((
+            Vec2::one(),
+            comn::Art::Vase,
+            Revolve::offset(Vec2::zero(), i as f32 / MAX as f32 * TAU),
+        ));
     }
 }
 
@@ -197,6 +288,7 @@ impl StarterWorlds {
     fn update(&mut self, chat: &mut ChatDispatcher) {
         for world in &mut self.worlds {
             world.update(chat);
+            revolve(&mut world.ecs);
         }
     }
 
@@ -227,7 +319,7 @@ async fn start() {
         }
 
         for world in starter_worlds.occupied_mut() {
-            chat.fill(world.clients_mut().iter().map(|(_, s)| s));
+            chat.fill(world.ecs.clients_mut().iter().map(|(_, s)| s));
         }
         starter_worlds.update(&mut chat);
 

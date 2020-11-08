@@ -53,7 +53,7 @@ pub async fn open_socket(my_addr: &str, pool_size: usize, client_tx: SyncSender<
                 packet.truncate(len);
                 use turbulence::packet_multiplexer::{IncomingError::*, IncomingTrySendError::*};
                 match incoming.try_send(packet) {
-                    Ok(()) => {},
+                    Ok(()) => {}
                     Err(Error(ChannelReceiverDropped)) => return,
                     Err(e) => log::error!("couldn't send packet: {}", e),
                 }
