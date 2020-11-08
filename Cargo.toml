@@ -1,0 +1,46 @@
+[package]
+name = "new"
+version = "0.1.0"
+authors = ["Cedric Hutchings <cedhut02@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "comn"
+path = "./src/comn/lib.rs"
+
+[[bin]]
+name = "client"
+path = "./src/client/main.rs"
+required-features = [ "client" ]
+
+[[bin]]
+name = "server"
+path = "./src/server/main.rs"
+required-features = [ "server" ]
+
+[features]
+client = [ "macroquad", "megaui-macroquad" ]
+server = [ "hecs" ]
+
+[dependencies]
+turbulence = { git = "https://github.com/cedric-h/turbulence.git", branch = "flush" }
+serde = { version = "1.0.117", features = [ "derive" ] }
+smol = "1.2.4"
+futures = "0.3.7"
+log = "0.4.11"
+macroquad = { version = "0.3.0-alpha.9", optional = true }
+megaui-macroquad = { version = "0.1.1", optional = true }
+glam = { version = "0.9", features = ["serde"] }
+fxhash = "0.2.1"
+bimap = "0.5.3"
+hecs = { optional = true, version = "0.2.15", features = [ "macros" ] }
+
+[target.wasm32-unknown-unknown.dependencies]
+sapp-console-log = "0.1.9"
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pretty_env_logger = "0.4.0"
+
+[patch.crates-io]
+megaui = { path = "../megaui" }
