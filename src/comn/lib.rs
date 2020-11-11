@@ -20,6 +20,8 @@ macro_rules! or_err {
     };
 }
 
+pub const SERVER_TICK_MS: u32 = 50;
+
 #[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 pub enum Art {
     Island,

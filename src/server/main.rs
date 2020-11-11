@@ -54,30 +54,24 @@ struct LastPos(Vec2);
 struct LastPosTracker {
     need_last: Vec<(hecs::Entity, Vec2)>,
     messages: Vec<comn::Move>,
-    start: Instant,
 }
 impl LastPosTracker {
     fn new() -> Self {
-        Self {
-            need_last: Vec::with_capacity(1000),
-            messages: Vec::with_capacity(1000),
-            start: Instant::now(),
-        }
+        Self { need_last: Vec::with_capacity(1000), messages: Vec::with_capacity(1000) }
     }
 
-    fn track(&mut self, ecs: &mut Ecs) {
-        let Self { messages, need_last, start } = self;
+    fn track(&mut self, ecs: &mut Ecs, tick: u32) {
+        let Self { messages, need_last } = self;
         need_last.extend(ecs.query::<&_>().without::<LastPos>().iter().map(|(e, p)| (e, *p)));
         for (e, pos) in need_last.drain(..) {
             comn::or_err!(ecs.insert_one(e, LastPos(pos)));
         }
 
         messages.clear();
-        let time = start.elapsed().as_secs_f64();
         for (e, (&pos, last_pos)) in &mut ecs.query::<(&Vec2, &mut LastPos)>() {
             if pos != last_pos.0 {
                 last_pos.0 = pos;
-                messages.push(comn::Move { id: e.to_bits(), time, pos });
+                messages.push(comn::Move { id: e.to_bits(), tick, pos });
             }
         }
     }
@@ -152,6 +146,7 @@ struct World {
     name: String,
     ecs: Ecs,
     last_pos_tracker: LastPosTracker,
+    tick: u32,
 
     /// Temporary buffer for storing clients before removing them.
     timed_out: Vec<hecs::Entity>,
@@ -162,6 +157,7 @@ impl World {
             name: name.to_string(),
             ecs: Ecs::new(),
             last_pos_tracker: LastPosTracker::new(),
+            tick: 0,
             timed_out: Vec::with_capacity(10),
         }
     }
@@ -170,7 +166,7 @@ impl World {
     /// sending them an intitial WorldJoin packet with essential world state.
     fn connect(&mut self, island: PlayerIsland) {
         use comn::{send_or_err, WorldJoin};
-        let Self { name, ecs, .. } = self;
+        let Self { name, ecs, tick, .. } = self;
 
         log::info!(
             "{} > {} joined in! world clients: {}",
@@ -185,13 +181,20 @@ impl World {
 
         send_or_err(
             &mut ecs.get_mut::<Session>(ent).unwrap().channel,
-            WorldJoin { world_name: name.clone(), islands, your_island: ent.to_bits() },
+            WorldJoin {
+                world_name: name.clone(),
+                islands,
+                your_island: ent.to_bits(),
+                tick: *tick,
+            },
         );
     }
 
     fn update(&mut self, chat: &mut ChatDispatcher) {
-        let Self { last_pos_tracker, ecs, timed_out, name, .. } = self;
-        last_pos_tracker.track(ecs);
+        let Self { last_pos_tracker, ecs, timed_out, name, tick, .. } = self;
+        *tick += 1;
+
+        last_pos_tracker.track(ecs, *tick);
         for (e, client) in &mut ecs.clients_mut() {
             if client.heartbeat() {
                 timed_out.push(e);
@@ -305,6 +308,12 @@ impl StarterWorlds {
     }
 }
 
+/// Technically a Quadratic Bezier Curve.
+/// that won't stop me from calling it a "three_lerp" or a thlerp for short :)
+fn thlerp(p0: Vec2, p1: Vec2, p2: Vec2, t: f32) -> Vec2 {
+    p0.lerp(p1, t).lerp(p1.lerp(p2, t), t)
+}
+
 async fn start() {
     let mut chat = ChatDispatcher::new();
     let mut starter_worlds = StarterWorlds::new();
@@ -312,6 +321,7 @@ async fn start() {
 
     smol::spawn(open_socket(comn::SERVER, 2500, client_tx)).detach();
 
+    let mut step_time = Instant::now();
     loop {
         // Add any new clients to our collection of channels
         if let Ok(session) = client_rx.try_recv() {
@@ -323,6 +333,7 @@ async fn start() {
         }
         starter_worlds.update(&mut chat);
 
-        smol::Timer::after(Duration::from_millis(16)).await;
+        step_time += Duration::from_millis(50);
+        smol::Timer::at(step_time).await;
     }
 }

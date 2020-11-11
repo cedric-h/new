@@ -114,7 +114,7 @@ messages! {
         #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
         pub struct Move {
             pub id: u64,
-            pub time: f64,
+            pub tick: u32,
             pub pos: Vec2
         }
     ),
@@ -141,6 +141,7 @@ messages! {
             pub islands: Vec<(u64, Vec2, crate::Art)>,
             pub your_island: u64,
             pub world_name: String,
+            pub tick: u32,
         }
     ),
 }
