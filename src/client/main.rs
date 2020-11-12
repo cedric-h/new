@@ -29,29 +29,31 @@ impl Sprite {
     }
 }
 
+const FRAMES_SAVED: usize = 5;
 #[derive(Debug, Copy, Clone)]
 struct Ent {
-    pos_frames: [(u32, Vec2); 10],
+    pos_frames: [(u32, Vec2); FRAMES_SAVED],
     sprite: Sprite,
 }
 impl Ent {
     fn new(pos: Vec2, art: comn::Art) -> Self {
-        Self { pos_frames: [(0, pos); 10], sprite: Sprite::new(art) }
+        Self { pos_frames: [(0, pos); FRAMES_SAVED], sprite: Sprite::new(art) }
     }
 
     fn pos_lerp(&self, (tick, time): (u32, f32)) -> Vec2 {
         let pfs = self.pos_frames;
-        let sim_time = (tick - 2, time);
+        let sim_time = (tick.saturating_sub(2), time);
         let tween_frames = pfs
             .iter()
             .position(|&(t, _)| t <= sim_time.0)
             .and_then(|l| Some([pfs.get(l - 1)?, pfs.get(l)?]));
-        //dbg!(tween_frames, sim_time);
+
         if let Some([&(t1, p1), &(t2, p2)]) = tween_frames {
             let expected = (t1 - t2) as f32;
-            if expected > 1.0 { dbg!(expected); }
+            if expected > 1.0 {
+                dbg!(expected, get_time());
+            }
             let elapsed = (sim_time.0 - t2) as f32 + sim_time.1;
-            dbg!(elapsed);
             p2.lerp(p1, elapsed / expected)
         } else {
             dbg!("no interp, no data :(", self.pos_frames, sim_time);
@@ -84,9 +86,9 @@ impl Ents {
             if let Some(Ent { pos_frames, .. }) = ents.get_mut(&id) {
                 let (last_tick, _) = pos_frames[0];
                 if tick > last_tick {
-                    let mut keep_frames = [Default::default(); 9];
-                    keep_frames.copy_from_slice(&pos_frames[0..9]);
-                    pos_frames[1..10].copy_from_slice(&keep_frames);
+                    let mut keep_frames = [Default::default(); FRAMES_SAVED - 1];
+                    keep_frames.copy_from_slice(&pos_frames[0..FRAMES_SAVED - 1]);
+                    pos_frames[1..FRAMES_SAVED].copy_from_slice(&keep_frames);
                     pos_frames[0] = (tick, pos);
                 }
             }
@@ -107,7 +109,7 @@ impl Drawer {
         use macroquad::prelude::*;
 
         set_camera(Camera2D {
-            zoom: vec2(1.0, screen_width() / screen_height()) / 4.8,
+            zoom: vec2(1.0, screen_width() / screen_height()) / 3.2,
             ..Default::default()
         });
 

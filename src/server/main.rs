@@ -231,22 +231,23 @@ use std::time::Instant;
 #[derive(Debug)]
 struct Revolve {
     center: Vec2,
-    start: Instant,
+    offset: f32,
 }
 impl Revolve {
     #[allow(dead_code)]
     fn new(center: Vec2) -> Self {
-        Self { center, start: Instant::now() }
+        Self { center, offset: 0.0 }
     }
     fn offset(center: Vec2, offset: f32) -> Self {
-        Self { center, start: Instant::now() - Duration::from_secs_f32(offset) }
+        Self { center, offset }
     }
 }
 
-fn revolve(ecs: &mut hecs::World) {
-    for (_, (pos, &Revolve { center, start })) in &mut ecs.query::<(&mut Vec2, &_)>() {
+fn revolve(ecs: &mut hecs::World, tick: u32) {
+    for (_, (pos, &Revolve { center, offset })) in &mut ecs.query::<(&mut Vec2, &_)>() {
         let dist = (center - *pos).length();
-        *pos = center + dist * comn::angle_to_vec(start.elapsed().as_secs_f32());
+        let t = (tick * comn::SERVER_TICK_MS) as f32 / 1000.0 as f32 + offset;
+        *pos = center + dist * comn::angle_to_vec(t);
     }
 }
 
@@ -290,8 +291,8 @@ impl StarterWorlds {
 
     fn update(&mut self, chat: &mut ChatDispatcher) {
         for world in &mut self.worlds {
+            revolve(&mut world.ecs, world.tick);
             world.update(chat);
-            revolve(&mut world.ecs);
         }
     }
 
@@ -333,7 +334,7 @@ async fn start() {
         }
         starter_worlds.update(&mut chat);
 
-        step_time += Duration::from_millis(50);
+        step_time += Duration::from_millis(comn::SERVER_TICK_MS as _);
         smol::Timer::at(step_time).await;
     }
 }
